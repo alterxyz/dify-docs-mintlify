@@ -1,9 +1,9 @@
-name: Process Documentation
+name: Process Documentation on PR
 
 on:
-    push:
-        branches: [main]
-        paths:
+    pull_request: # 更改触发器为 pull_request
+        types: [opened, synchronize, reopened] # 当 PR 打开、有新提交推送到 PR 分支或重新打开时触发
+        paths: # 只有当这些路径下的文件在 PR 中被更改时才触发
             - 'tools/**'
             - 'plugin-dev-en/**'
             - 'plugin-dev-ja/**'
@@ -11,17 +11,20 @@ on:
             - 'en/**'
             - 'ja-jp/**'
             - 'zh_hans/**'
-    workflow_dispatch:
+    workflow_dispatch: # 保留手动触发
 
 jobs:
-    process-docs:
+    process-docs-in-pr:
         runs-on: ubuntu-latest
         permissions:
-            contents: write
+            contents: write # 允许 GITHUB_TOKEN 提交到 PR 分支
 
         steps:
-            - name: Checkout repository
-              uses: actions/checkout@v3
+            - name: Checkout PR branch
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ github.head_ref }} # 检出 PR 的源分支
+                  # fetch-depth: 0 # 如果你的脚本需要完整的 git 历史，可以取消注释
 
             - name: Set up Python
               uses: actions/setup-python@v4
@@ -47,33 +50,54 @@ jobs:
                     echo "${{ steps.doc-tools.outputs.detailed_message }}"
                   fi
 
-            - name: Commit changes
-              if: always()
+            - name: Commit and Push Documentation Changes
+              if: always() # 即使脚本有错，也尝试提交已有的更改（或者根据你的需求调整）
+              env:
+                  # 定义提交者信息，使用 GitHub Actions bot 的通用身份
+                  GIT_COMMITTER_NAME: github-actions[bot]
+                  GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+                  GIT_AUTHOR_NAME: ${{ steps.doc-tools.outputs.commit_author_name || 'Documentation Bot' }}
+                  GIT_AUTHOR_EMAIL: ${{ steps.doc-tools.outputs.commit_author_email || 'docs-bot@example.com' }}
               run: |
-                  if [[ -n "$(git status --porcelain)" ]]; then
-                    FINAL_COMMIT_SUBJECT=""
-                    if [[ -n "${{ steps.doc-tools.outputs.commit_message }}" ]]; then
-                      FINAL_COMMIT_SUBJECT="${{ steps.doc-tools.outputs.commit_message }}"
-                    else
-                      FINAL_COMMIT_SUBJECT="Docs: Automated documentation updates"
-                    fi
-                    
-                    FINAL_COMMIT_BODY=""
-                    if [[ -n "${{ steps.doc-tools.outputs.detailed_message }}" ]]; then
-                      FINAL_COMMIT_BODY="${{ steps.doc-tools.outputs.detailed_message }}"
-                    else
-                      FINAL_COMMIT_BODY="No detailed information provided by the script."
-                    fi
-                    
-                    git config --local user.email "88554920+alterxyz@users.noreply.github.com"
-                    git config --local user.name "alterxyz"
-                    git add .
-                    git commit -m "$FINAL_COMMIT_SUBJECT" -m "$FINAL_COMMIT_BODY" || echo "No changes to commit"
-                    git push origin HEAD:main
-                    
-                    echo "Changes committed with subject: $FINAL_COMMIT_SUBJECT"
-                    echo "Description:"
-                    echo "$FINAL_COMMIT_BODY"
-                  else
-                    echo "No file changes, skipping commit"
+                  # 检查是否有文件更改
+                  if [[ -z "$(git status --porcelain)" ]]; then
+                    echo "No file changes from script, skipping commit."
+                    exit 0
                   fi
+
+                  # 防止 Action 自身触发的循环 (如果 Action 的提交又触发了 synchronize)
+                  # 检查最后一次提交是否是本 Action 做的，如果是，则跳过
+                  # 注意：这需要 commit message 或 author 有一个明确的标识
+                  # 更简单的方法是确保脚本是幂等的，或者在 commit message 中加入 [skip ci]
+                  # 这里我们假设脚本输出的 commit message 可以用来判断
+                  
+                  git config --local user.email "${GIT_AUTHOR_EMAIL}"
+                  git config --local user.name "${GIT_AUTHOR_NAME}"
+                  git config --local committer.email "${GIT_COMMITTER_EMAIL}"
+                  git config --local committer.name "${GIT_COMMITTER_NAME}"
+
+                  FINAL_COMMIT_SUBJECT=""
+                  if [[ -n "${{ steps.doc-tools.outputs.commit_message }}" ]]; then
+                    FINAL_COMMIT_SUBJECT="${{ steps.doc-tools.outputs.commit_message }}"
+                  else
+                    FINAL_COMMIT_SUBJECT="Docs: Automated updates by PR Action"
+                  fi
+                  
+                  FINAL_COMMIT_BODY=""
+                  if [[ -n "${{ steps.doc-tools.outputs.detailed_message }}" ]]; then
+                    FINAL_COMMIT_BODY="${{ steps.doc-tools.outputs.detailed_message }}"
+                  else
+                    FINAL_COMMIT_BODY="Changes made by the documentation processing script."
+                  fi
+
+                  git add .
+                  echo "Committing changes with subject: $FINAL_COMMIT_SUBJECT"
+                  git commit -m "$FINAL_COMMIT_SUBJECT" -m "$FINAL_COMMIT_BODY"
+                  
+                  echo "Pushing changes to branch ${{ github.head_ref }}"
+                  # GITHUB_TOKEN 应该有权限推送到 PR 的源分支 (github.head_ref)
+                  # 如果 PR 来自 fork，且未勾选 "Allow edits from maintainers"，这里可能会失败
+                  # 对于同仓库的 PR 分支，这通常是可行的
+                  git push origin HEAD:${{ github.head_ref }}
+                  
+                  echo "Changes pushed to PR branch."
