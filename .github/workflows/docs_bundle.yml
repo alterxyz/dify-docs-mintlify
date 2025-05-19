@@ -16,6 +16,8 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v4
               with:
+                  # For pull_request, check out the PR's head SHA.
+                  # For workflow_dispatch, check out the branch selected (github.ref).
                   ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref }}
 
             - name: Set up Python
@@ -74,24 +76,27 @@ jobs:
                   git commit -m "$FINAL_COMMIT_SUBJECT" -m "$FINAL_COMMIT_BODY"
                   
                   BRANCH_TO_PUSH_TO=""
+                  # For pull_request, push to the PR's source branch (github.head_ref)
                   if [[ "${{ github.event_name }}" == "pull_request" ]]; then
                     BRANCH_TO_PUSH_TO="${{ github.head_ref }}"
+                  # For workflow_dispatch, push to the branch the workflow was run on (github.ref_name)
                   elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
                     BRANCH_TO_PUSH_TO="${{ github.ref_name }}"
                   fi
 
                   if [[ -n "$BRANCH_TO_PUSH_TO" ]]; then
+                    # We checked out a specific SHA, so HEAD is detached.
+                    # Pushing HEAD to the named branch updates that branch to this new commit.
                     git push origin HEAD:"$BRANCH_TO_PUSH_TO"
                     echo "Changes committed and pushed to branch $BRANCH_TO_PUSH_TO with subject: $FINAL_COMMIT_SUBJECT"
                   else
-                    echo "Error: Could not determine branch to push to for event ${{ github.event_name }}"
+                    echo "Error: Could not determine branch to push to for event ${{ github.event_name }}."
+                    # This case should ideally not be reached if the 'if' condition for the step is correct.
                     exit 1
                   fi
 
             - name: Report no changes or fork PR
-              if: >-
-                steps.git_status_check.outputs.changes_exist == 'false' ||
-                (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && steps.git_status_check.outputs.changes_exist == 'true')
+              if: steps.git_status_check.outputs.changes_exist == 'false' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && steps.git_status_check.outputs.changes_exist == 'true')
               run: |
                   if [[ "${{ steps.git_status_check.outputs.changes_exist }}" == "false" ]]; then
                     echo "No file changes detected by the script, skipping commit."
