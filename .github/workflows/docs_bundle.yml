@@ -1,22 +1,22 @@
-name: Process Documentation on PR
+name: Process Documentation
 
 on:
-    pull_request: # 触发器为 pull_request
-        types: [opened, synchronize, reopened] # 当 PR 打开、有新提交或重新打开时触发
-                                             # 移除了 paths 过滤器
-    workflow_dispatch: # 保留手动触发
+    pull_request:
+        types: [opened, synchronize]
+        branches: [main]
+    workflow_dispatch:
 
 jobs:
-    process-docs-in-pr:
+    process-docs:
         runs-on: ubuntu-latest
         permissions:
-            contents: write # 允许 GITHUB_TOKEN 提交到 PR 分支
+            contents: write
 
         steps:
-            - name: Checkout PR branch
+            - name: Checkout repository
               uses: actions/checkout@v4
               with:
-                  ref: ${{ github.head_ref }} # 检出 PR 的源分支
+                  ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref }}
 
             - name: Set up Python
               uses: actions/setup-python@v4
@@ -42,43 +42,60 @@ jobs:
                     echo "${{ steps.doc-tools.outputs.detailed_message }}"
                   fi
 
-            - name: Commit and Push Documentation Changes
-              if: always()
-              env:
-                  GIT_COMMITTER_NAME: github-actions[bot]
-                  GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-                  GIT_AUTHOR_NAME: ${{ steps.doc-tools.outputs.commit_author_name || 'Documentation Bot' }}
-                  GIT_AUTHOR_EMAIL: ${{ steps.doc-tools.outputs.commit_author_email || 'docs-bot@example.com' }}
+            - name: Check for file changes
+              id: git_status_check
               run: |
-                  if [[ -z "$(git status --porcelain)" ]]; then
-                    echo "No file changes from script, skipping commit."
-                    exit 0
+                  if [[ -n "$(git status --porcelain)" ]]; then
+                    echo "changes_exist=true" >> $GITHUB_OUTPUT
+                  else
+                    echo "changes_exist=false" >> $GITHUB_OUTPUT
                   fi
-                  
-                  git config --local user.email "${GIT_AUTHOR_EMAIL}"
-                  git config --local user.name "${GIT_AUTHOR_NAME}"
-                  git config --local committer.email "${GIT_COMMITTER_EMAIL}"
-                  git config --local committer.name "${GIT_COMMITTER_NAME}"
 
+            - name: Commit and Push to PR branch or current branch
+              if: steps.git_status_check.outputs.changes_exist == 'true' && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false) || github.event_name == 'workflow_dispatch')
+              run: |
                   FINAL_COMMIT_SUBJECT=""
                   if [[ -n "${{ steps.doc-tools.outputs.commit_message }}" ]]; then
                     FINAL_COMMIT_SUBJECT="${{ steps.doc-tools.outputs.commit_message }}"
                   else
-                    FINAL_COMMIT_SUBJECT="Docs: Automated updates by PR Action"
+                    FINAL_COMMIT_SUBJECT="Docs: Automated documentation updates by CI"
                   fi
                   
                   FINAL_COMMIT_BODY=""
                   if [[ -n "${{ steps.doc-tools.outputs.detailed_message }}" ]]; then
                     FINAL_COMMIT_BODY="${{ steps.doc-tools.outputs.detailed_message }}"
                   else
-                    FINAL_COMMIT_BODY="Changes made by the documentation processing script."
+                    FINAL_COMMIT_BODY="No detailed information provided by the script."
                   fi
-
+                  
+                  git config --local user.email "88554920+alterxyz@users.noreply.github.com"
+                  git config --local user.name "alterxyz"
                   git add .
-                  echo "Committing changes with subject: $FINAL_COMMIT_SUBJECT"
                   git commit -m "$FINAL_COMMIT_SUBJECT" -m "$FINAL_COMMIT_BODY"
                   
-                  echo "Pushing changes to branch ${{ github.head_ref }}"
-                  git push origin HEAD:${{ github.head_ref }}
-                  
-                  echo "Changes pushed to PR branch."
+                  BRANCH_TO_PUSH_TO=""
+                  if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+                    BRANCH_TO_PUSH_TO="${{ github.head_ref }}"
+                  elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+                    BRANCH_TO_PUSH_TO="${{ github.ref_name }}"
+                  fi
+
+                  if [[ -n "$BRANCH_TO_PUSH_TO" ]]; then
+                    git push origin HEAD:"$BRANCH_TO_PUSH_TO"
+                    echo "Changes committed and pushed to branch $BRANCH_TO_PUSH_TO with subject: $FINAL_COMMIT_SUBJECT"
+                  else
+                    echo "Error: Could not determine branch to push to for event ${{ github.event_name }}"
+                    exit 1
+                  fi
+
+            - name: Report no changes or fork PR
+              if: >-
+                steps.git_status_check.outputs.changes_exist == 'false' ||
+                (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && steps.git_status_check.outputs.changes_exist == 'true')
+              run: |
+                  if [[ "${{ steps.git_status_check.outputs.changes_exist }}" == "false" ]]; then
+                    echo "No file changes detected by the script, skipping commit."
+                  elif [[ "${{ github.event_name }}" == "pull_request" && "${{ github.event.pull_request.head.repo.fork }}" == "true" && "${{ steps.git_status_check.outputs.changes_exist }}" == "true" ]]; then
+                    echo "Changes detected on a PR from a fork. No auto-commit to the fork branch will be performed."
+                    echo "These changes will be handled by the merge process or subsequent actions on main."
+                  fi
